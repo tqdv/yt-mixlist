@@ -3,10 +3,15 @@
 // @namespace kawa.tf
 // @description Displays the currently playing track in a mix with a tracklist
 // @version 0.0.1
-// @match http://www.youtube.com/watch*
-// @match https://www.youtube.com/watch*
+// @match *://*.youtube.com/*
 // @license GPL-3.0-or-later
 // ==/UserScript==
+
+/* Match on youtube.com in general as YouTube handles links dynamically
+ * See https://developer.chrome.com/extensions/match_patterns
+ * for the specific globbing
+ */
+
 
 /*
 tryRepeatedly is used when you're relying on elements that are
@@ -14,8 +19,8 @@ loaded aynchronously, for example the YouTube player, its description, metadata,
 comments, etc…
 */
 
-/* Roadmap:
 
+/* Roadmap:
 - Test it on more types of tracklists
 - Handle document.location change
 - tryRepeatedly could follow a function for frequency. Maybe use the derivative
@@ -28,17 +33,22 @@ comments, etc…
 - Add a progress bar for it
 - Change when the display appears (because you can currently see
   a weird pink rectangle)
-
+- handle multiple pinned comment, or tracklist in comment
+  - Handle timestamp ranges
+  - Handle oneline tracklists
 */
 
 
 
 (function () {
+'use strict';
+
 /* Constants */
 const script_name = 'yt-mixlist'
 const display_id = script_name + '-display';
+const style_id = script_name + '-style';
 const display_css_class = script_name + '-display';
-const script_css = `
+const script_css =`
 .${display_css_class} {
     border: 0.2rem solid pink;
     padding: 0 0.2rem;
@@ -48,12 +58,11 @@ const script_css = `
 }
 `;
 
-
 /* Globals */
-var display;  // The main container
-var player;  // The YouTube player that has API methods
-var tracklist;
-var status = {
+let display;  // The main container
+let player;  // The YouTube player that has API methods
+let tracklist;
+let status = {
     description: {
         found: undefined,
         parsed: false,
@@ -65,13 +74,17 @@ var status = {
 };
 
 
-/* Informational */
-
-function log(s) {
+function log (s) {
     console.log(script_name + ": " + s);
 }
-// Used for debug
-function hi() { log("hi"); }
+function log_video (id) {
+    if (id === null) {
+        log ("This page should not have a video player");
+    } else {
+        log("Video id is " + id);
+    }
+}
+function hi() { log("hi"); }  // Used for debug
 
 
 
@@ -130,18 +143,19 @@ var findLastIndex = function (a, func) {
 /* Fetch DOM elements */
 
 // result = {
-//              player element with API,
-//              validity of the element
-//          } || null
-var getPlayer = function () {
+//     player: element with API,
+//     valid: does it have the needed API
+// } || null
+let getPlayer = function () {
     let player = document.getElementById('movie_player');
     if (player === null) { return null; }
     let valid = true;
 
     // Check if the required functions exist
-    props = ["getDuration", "getCurrentTime"];
-    for (prop in props) {
+    let props = ["getDuration", "getCurrentTime"];
+    for (let prop of props) {
         if (!(prop in player)) {
+            valid = false;
             break;
         }
     }
@@ -149,29 +163,25 @@ var getPlayer = function () {
     return {player, valid};
 }
 
-
-// result = sibling of where the display should go || null
-var getViewsDiv = function () {
+// result = previous sibling of where the display should go || null
+let getViewsDiv = function () {
     return document.querySelector('#info-text.ytd-video-primary-info-renderer');
 }
 
-
 // result = flex growing thing || null
-var getFlexDiv = function () {
+let getFlexDiv = function () {
     return document.querySelector('#flex.ytd-video-primary-info-renderer');
 }
 
-
 // result = element containing description text || null
-var getDescription = function () {
+let getDescription = function () {
     let selected = document.getElementsByClassName('ytd-video-secondary-info-renderer content');
     if (selected.length == 0) { return null; }
     return selected[0];
 }
 
-
-// result = element containing the pinned comment text || null
-var getPinnedComment = function () {
+// result = element containing the first pinned comment text || null
+let getPinnedComment  = function () {
     let pinc = document.getElementById('pinned-comment-badge');
     if (pinc === null ) { return null; }
 
@@ -184,17 +194,24 @@ var getPinnedComment = function () {
 }
 
 
-
 /* Create DOM elements */
 
-var includeStyleSheet = function() {
+/* > First, the stylesheet */
+let existsStyleSheet = function () {
+    return document.getElementById(style_id) !== null;
+}
+
+let includeStyleSheet = function () {
     let ss = document.createElement('style');
-    ss.innerHTML = script_css;
+    ss.textContent = script_css;
+    ss.setAttribute('id', style_id);
     document.head.appendChild(ss);
 }
 
+
+
 // stores the diplay in the global variable $display
-var createDisplay = function () {
+let createDisplay = function () {
     // Check if it exist first
     let found = document.getElementById(display_id);
     if (found) { display = found; return; };
@@ -220,7 +237,7 @@ var createDisplay = function () {
 /* Logic */
 
 // result = [{title: , timestamp: , seconds: }, …] sorted by seconds || null
-var parseForTracklist = function (elt) {
+let parseForTracklist = function (elt) {
     /* Unused because I can't seem to find a use for the fact that the word
      * tracklist exists or not
     let lines = elt.innerHTML.split('\n');
@@ -295,9 +312,8 @@ var parseForTracklist = function (elt) {
 }
 
 
-var findTracklist = function () {
-// Something something tracklist already exists and both have been parsed.
-
+let findTracklist = function () {
+    // Something something tracklist already exists and both have been parsed.
     let result = null;
 
     if (!status.description.found) {
@@ -337,13 +353,13 @@ var findTracklist = function () {
 }
 
 
-var createTrackUpdater = function () {
+let createTrackUpdater = function () {
     var updateTrack = function() {
         let time = player.getCurrentTime();
         let i = findLastIndex(tracklist, v => v.seconds <= time );
         let newText = tracklist[i].title;
-        if (display.innerHTML != newText) {
-            display.innerHTML = newText;
+        if (display.textContent != newText) {
+            display.textContent = newText;
         }
     };
     let id = setInterval (updateTrack, 500);
@@ -351,34 +367,172 @@ var createTrackUpdater = function () {
 }
 
 
-async function main () {
+// This is a scope/object
+// Removing listeners is not implemented, might do it with ids.
+// Only a single interval is allowed
+function LocationWatcher () {
+    let callbacks = [];
+    let url = null;
+    let timer_id = null;
+
+    let checkUrl = function () {
+        let u = location.href;
+        if (u != url) {
+            url = u;
+            for (let c of callbacks) {
+                c (url);
+            }
+        }
+    }
+
+    // default delay of 200ms
+    this.start = function (delay) {
+        if (timer_id !== null) {
+            this.stop();
+        }
+
+        if (delay === undefined) {
+            delay = 200;  // ms
+        }
+
+        url = location.href;
+        timer_id = setInterval(checkUrl, delay);
+    }
+
+    this.stop = function () {
+        if (timer_id !== null) {
+            clearInterval(timer_id);
+            timer_id = null;
+        }
+    }
+
+    // f will be called with the new url as first argument
+    this.addCallback = function (f) {
+        callbacks.push(f);
+    }
+}
+
+
+// result = id string || null
+let getIdFromUrl = function (url) {
+    let start = url.indexOf("/watch?");
+    if (start == -1) return null;
+    start = url.indexOf("v=", start);
+    if (start == -1) return null;
+    start += "v=".length;
+
+    let end = url.indexOf("&", start);
+    if (end == -1) end = url.length;
+
+    return url.substring(start, end);
+}
+
+// result = id string || null
+let getCurrentVideoId = function () {
+    return getIdFromUrl(location.href);
+}
+
+// This is a scope/object
+// Removing listeners is not implemented, might do it with ids.
+function VideoIdWatcher () {
+    let video_id = null;
+    const lw  = new LocationWatcher();
+    let callbacks = [];
+
+    let checkId = function (url) {
+        let newVideoId = getIdFromUrl(url);
+
+        if (newVideoId != video_id) {
+            video_id = newVideoId;
+            for (let c of callbacks) {
+                c (video_id);
+            }
+        }
+    }
+
+    // default delay of 200ms
+    this.start = function (delay) {
+        if (delay === undefined) {
+            delay = 200;  // ms
+        }
+
+        video_id = getCurrentVideoId();
+        lw.addCallback(checkId);
+        lw.start(delay);
+    }
+
+    this.stop = function () {
+        lw.stop();
+    }
+
+    // f will be called with the new video id as first argument
+    this.addCallback = function (f) {
+        callbacks.push(f);
+    }
+}
+
+
+// This is a scope/object containing the main logic
+function MixList () {
+
+    let last_id = null;
+
+    this.shoot = function (id) {
+        if (typeof id === 'undefined') {
+            id = getCurrentVideoId();
+        }
+
+        if (id === null) {
+            // Maybe do something with last_id
+            // kill previous display and updater if they exist
+            // Do nothing else as this is not a video
+            return;
+        }
+
+        // Maybe add a delay, it's important, but it can work without it
+        if (document.head !== null && !existsStyleSheet()) {
+            includeStyleSheet();
+        }
+
+        let gotPlayer = tryRepeatedly (getPlayer);
+        gotPlayer.then( value => {
+            // Player exists
+            log("Found player");
+            player = value.player;
+            return tryRepeatedly(findTracklist, 50, 200);
+        },
+        error => { log("Could not find player."); })
+
+        .then( value => {
+            // Tracklist found
+            log("Found tracklist");
+            tracklist = value;
+            console.log(tracklist);
+            createDisplay();
+            log("Created display");
+            createTrackUpdater();
+        },
+        error => { log("Could not find tracklist"); });
+    }
+}
+
+
+/* Init and setup */
+async function main() {
     log("Started");
 
-    includeStyleSheet();
+    let ml = new MixList();
+    let viw = new VideoIdWatcher();
 
-    let gotPlayer = tryRepeatedly (getPlayer);
-    gotPlayer.then( value => {
-        // Player exists
-        log("Found player");
-        player = value.player;
-        createDisplay();
-        log("Created display");
-        return tryRepeatedly(findTracklist, 50, 200);
-    },
-    error => { log("Could not find player."); })
+    viw.addCallback(id => log_video(id));
+    viw.addCallback(ml.shoot);
 
-    .then( value => {
-        // Tracklist found
-        log("Found tracklist");
-        tracklist = value;
-console.log(tracklist);
-        createTrackUpdater();
-    },
-    error => { log("Could not find tracklist"); })
-    ;
+    log_video(getCurrentVideoId());
+    ml.shoot();
 
+    viw.start();
 
-    log("Got to the end");
+    log("Done");
 }
 
 
@@ -388,3 +542,6 @@ console.log(tracklist);
 main();
 
 })();
+
+
+// vim: fdm=indent fdc=2
